@@ -91,10 +91,7 @@ GITHUB_TOKEN=ghp_tuTokenAqui
   "mcpServers": {
     "github-ia-agent": {
       "command": "node",
-      "args": ["/ruta/absoluta/a/github-ia-agent-m5/dist/index.js"],
-      "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
-      }
+      "args": ["/ruta/absoluta/a/github-ia-agent-m5/dist/index.js"]
     }
   }
 }
@@ -103,6 +100,16 @@ GITHUB_TOKEN=ghp_tuTokenAqui
 4. Guardar y verificar que el servidor aparezca listado en el panel de MCP Servers.
 
 > Reemplazar `/ruta/absoluta/...` por la ruta real del proyecto en tu máquina. Para desarrollo, se puede usar `"command": "npx"` con `"args": ["tsx", "/ruta/a/src/index.ts"]`.
+
+**No hace falta declarar el token en el config.** El servidor localiza el `.env` a partir de la ubicación de su propio módulo, no del directorio desde el que se lo lanzó, así que lo encuentra igual aunque el host arranque el proceso con otro `cwd`. El token queda en un solo archivo, el que ya está en `.gitignore`.
+
+Si aun así se quiere pasar por configuración (por ejemplo, para usar un token distinto al del `.env`), se puede agregar un bloque `env` con el valor literal. Ese valor tiene prioridad sobre el archivo:
+
+```json
+"env": { "GITHUB_TOKEN": "ghp_tuTokenAqui" }
+```
+
+> **Cuidado con las plantillas de variables.** Escribir `"GITHUB_TOKEN": "${GITHUB_TOKEN}"` solo funciona si el host expande esa sintaxis. Si no la expande, al servidor le llega el texto literal `${GITHUB_TOKEN}` como token: arranca sin errores y todas las llamadas fallan con 401, mientras el `.env` correcto queda ignorado por tener prioridad más baja. Al iniciar, el servidor loguea a stderr desde qué archivo cargó las variables, lo que permite detectar este caso de inmediato.
 
 ---
 
@@ -258,7 +265,7 @@ El código HTTP no se escribe a mano en ningún lado: lo aporta Boom a través d
 | `FORBIDDEN` | 403 | `GITHUB_API_ERROR` | No | Al token le faltan scopes |
 | `NOT_FOUND` | 404 | `GITHUB_API_ERROR` | No | Owner, repo o commit inexistente |
 | `CONFLICT` | 409 | `GITHUB_API_ERROR` | No | Repo vacío o la rama cambió durante la operación |
-| `UNPROCESSABLE` | 422 | `GITHUB_API_ERROR` | No | GitHub rechazó los datos (nombre duplicado, rama inexistente) |
+| `UNPROCESSABLE` | 422 | `GITHUB_API_ERROR` | No | GitHub rechazó los datos: nombre en uso, o rama o commit inexistente |
 | `RATE_LIMIT` | 429 | `GITHUB_API_ERROR` | **Sí** | Se agotó el límite de peticiones |
 | `NETWORK_ERROR` | 503 | `NETWORK_ERROR` | **Sí** | No se pudo conectar (ECONNRESET, ETIMEDOUT...) |
 | `GITHUB_SERVER_ERROR` | 502 | `GITHUB_API_ERROR` | **Sí** | GitHub respondió 5xx |
@@ -288,6 +295,8 @@ Sugerencia: Revisá los parámetros marcados y volvé a intentar con valores cor
 ```
 
 Y cuando el error es transitorio, se le avisa explícitamente que puede reintentar. En paralelo, el error completo (con `details` y el status real de GitHub) se loguea de forma estructurada a **stderr** —nunca a stdout, que está reservado para el protocolo JSON-RPC—.
+
+> **Detalle de implementación:** `withRetry` recibe el contexto del recurso (`{ owner, repo, resource }`) y se lo pasa al traductor de errores. Es necesario ahí y no solo en el handler: `withRetry` tiene que traducir el error para saber si es reintentable, y una vez traducido a `AppError` el handler ya no puede enriquecerlo. Sin eso, todo error que pasa por el retry pierde el nombre del recurso y el usuario recibe un "no fue encontrado" que no dice qué.
 
 ### Por qué una librería y no constantes propias
 
@@ -372,6 +381,8 @@ Los tests cubren:
 | Error | Causa probable | Solución |
 |-------|----------------|----------|
 | **AUTH_ERROR** / "token inválido" | `GITHUB_TOKEN` ausente, expirado o mal configurado | Verificar el token en `.env` y sus scopes |
+| **401 desde el host MCP, pero funciona por terminal** | El host pasa el token por `env` sin expandir la plantilla, y ese valor tiene prioridad sobre el `.env` | Sacar el bloque `env` del config del host, o poner el token literal |
+| **Al iniciar: "No se encontró ningún archivo .env"** | Falta el archivo en la raíz del proyecto | Crearlo a partir de `.env.example` |
 | **"No tenés permisos suficientes"** (403) | El token no tiene el scope `repo` | Regenerar el token con los scopes correctos |
 | **"El recurso no fue encontrado"** (404) | Owner/repo mal escrito o inexistente | Verificar el nombre del repositorio |
 | **Error 409 en create_commit** | El repositorio está vacío (sin commits) | Inicializar el repo con un README antes de commitear |
