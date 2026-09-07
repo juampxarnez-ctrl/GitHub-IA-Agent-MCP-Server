@@ -71,6 +71,24 @@ export interface CommitSummary {
     message: string;
     author: string;
     date: string;
+    url: string;
+}
+
+/** Resultado de volver el estado de una rama a un commit anterior. */
+export interface RevertResult {
+    /** false cuando la rama ya estaba en ese commit y no hizo falta hacer nada. */
+    reverted: boolean;
+    branch: string;
+    /** Commit al que se quiso volver. */
+    targetSha: string;
+    /** Commit en el que estaba la rama antes de la operación. */
+    previousHeadSha: string;
+    /** Commit nuevo que restaura el estado (vacío si no hizo falta revertir). */
+    newCommitSha: string;
+    /** URL del commit nuevo (vacía si no hizo falta revertir). */
+    newCommitUrl: string;
+    /** Mensaje del commit de revert. */
+    message: string;
 }
 
 export interface IssueInfo {

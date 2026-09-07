@@ -11,6 +11,7 @@ import type {
     IssueInfo,
     PullRequestSummary,
     PullRequestInfo,
+    RevertResult,
 } from "../types.js";
 
 // repositories
@@ -47,7 +48,8 @@ export async function createRepository(input: {
             name: input.name,
             description: input.description,
             private: input.private,
-        })
+        }),
+        { context: { resource: input.name } }
     );
 
     return {
@@ -116,14 +118,28 @@ export async function getUserSummary(
 
 export async function getRepositoryCommits(
     owner: string,
-    repo: string
+    repo: string,
+    options: { branch?: string; perPage?: number } = {}
 ): Promise<CommitSummary[]> {
 
-    const response = await octokit.repos.listCommits({
-        owner,
-        repo,
-        per_page: 10,
-    });
+    const response = await withRetry(() =>
+        octokit.repos.listCommits({
+            owner,
+            repo,
+            // `sha` acepta el nombre de una rama; si no se pasa, GitHub usa la rama por defecto.
+            sha: options.branch,
+            per_page: options.perPage ?? 10,
+        }),
+        {
+            context: {
+                owner,
+                repo,
+                resource: options.branch
+                    ? `${owner}/${repo} (rama ${options.branch})`
+                    : undefined,
+            },
+        }
+    );
 
     return response.data.map(commit => ({
         sha: commit.sha,
@@ -133,6 +149,8 @@ export async function getRepositoryCommits(
         author: commit.commit.author?.name ?? "Unknown",
 
         date: commit.commit.author?.date ?? "",
+
+        url: commit.html_url,
     }));
 }
 
@@ -210,7 +228,9 @@ export async function getRepositoryIssues(
             repo,
             per_page: 10,
             state,
-        }));
+        }),
+        { context: { owner, repo } }
+    );
 
     return response.data.map(issue => ({
         number: issue.number,
@@ -285,7 +305,8 @@ export async function listRepositories(input: {
             visibility: input.visibility ?? "all",
             sort: input.sort ?? "updated",
             per_page: input.per_page ?? 30,
-        })
+        }),
+        { context: { resource: "los repositorios de tu cuenta" } }
     );
 
     return response.data.map((repo) => ({
@@ -311,7 +332,8 @@ export async function createIssue(input: {
             repo: input.repo,
             title: input.title,
             body: input.body,
-        })
+        }),
+        { context: { owner: input.owner, repo: input.repo } }
     );
 
     return {
@@ -395,9 +417,99 @@ export async function createCommit(input: {
     };
 }
 
+/**
+ * Vuelve el contenido de una rama al estado de un commit anterior.
+ *
+ * NO reescribe la historia. En vez de mover la rama hacia atrás (lo que dejaría
+ * commits huérfanos y rompería el repo de cualquiera que ya lo hubiera clonado),
+ * crea un COMMIT NUEVO cuyo árbol de archivos es el del commit destino y cuyo
+ * padre es el HEAD actual. El resultado es idéntico en contenido, el historial
+ * queda intacto y la operación se puede deshacer revirtiendo otra vez.
+ *
+ *   antes:  A ── B ── C ── D (HEAD)
+ *   después: A ── B ── C ── D ── E (HEAD, árbol de B)
+ */
+export async function revertToCommit(input: {
+    owner: string;
+    repo: string;
+    branch: string;
+    sha: string;
+    message?: string;
+}): Promise<RevertResult> {
+    const { owner, repo, branch, sha } = input;
+
+    // 1. HEAD actual de la rama.
+    const refResp = await withRetry(() =>
+        octokit.git.getRef({ owner, repo, ref: `heads/${branch}` }),
+        { context: { owner, repo, resource: `${owner}/${repo} (rama ${branch})` } }
+    );
+    const headSha = refResp.data.object.sha;
+
+    // 2. Commit destino: valida que exista y nos da su árbol de archivos.
+    const targetCommit = await withRetry(() =>
+        octokit.repos.getCommit({ owner, repo, ref: sha }),
+        { context: { owner, repo, resource: `${owner}/${repo}@${sha}` } }
+    );
+    const targetSha = targetCommit.data.sha;
+    const targetTreeSha = targetCommit.data.commit.tree.sha;
+
+    // 3. Si la rama ya está en ese commit, no hay nada que hacer.
+    //    Devolver esto en vez de crear un commit vacío evita ensuciar el historial.
+    if (headSha === targetSha) {
+        return {
+            reverted: false,
+            branch,
+            targetSha,
+            previousHeadSha: headSha,
+            newCommitSha: "",
+            newCommitUrl: "",
+            message: `La rama "${branch}" ya está en el commit ${targetSha.slice(0, 7)}.`,
+        };
+    }
+
+    const commitMessage =
+        input.message ??
+        `Revert: volver al estado del commit ${targetSha.slice(0, 7)}`;
+
+    // 4. Commit nuevo: árbol del commit viejo, padre el HEAD actual.
+    const newCommit = await withRetry(() =>
+        octokit.git.createCommit({
+            owner,
+            repo,
+            message: commitMessage,
+            tree: targetTreeSha,
+            parents: [headSha],
+        }),
+        { context: { owner, repo } }
+    );
+
+    // 5. Mover la rama al commit nuevo. Sin force: es un avance normal del historial.
+    await withRetry(() =>
+        octokit.git.updateRef({
+            owner,
+            repo,
+            ref: `heads/${branch}`,
+            sha: newCommit.data.sha,
+        }),
+        { context: { owner, repo, resource: `${owner}/${repo} (rama ${branch})` } }
+    );
+
+    return {
+        reverted: true,
+        branch,
+        targetSha,
+        previousHeadSha: headSha,
+        newCommitSha: newCommit.data.sha,
+        newCommitUrl: `https://github.com/${owner}/${repo}/commit/${newCommit.data.sha}`,
+        message: commitMessage,
+    };
+}
+
 // health check: verifica que el token es válido y hay conexión con GitHub
 export async function healthCheck(): Promise<{ status: string; user: string }> {
-    const response = await withRetry(() => octokit.users.getAuthenticated());
+    const response = await withRetry(() => octokit.users.getAuthenticated(), {
+        context: { resource: "el usuario autenticado" },
+    });
     return {
         status: "ok",
         user: response.data.login,

@@ -6,8 +6,10 @@ import { createRepositoryHandler } from "./handlers/create-repository.handler.js
 import { createCommitHandler } from "./handlers/create-commit.handler.js";
 import { listIssuesHandler } from "./handlers/list-issues.handler.js";
 import { createIssueHandler } from "./handlers/create-issue.handler.js";
-import { AppError } from "./errors/app-errors.js";
+import { listCommitsHandler } from "./handlers/list-commits.handler.js";
+import { revertToCommitHandler } from "./handlers/revert-to-commit.handler.js";
 import { healthCheckHandler } from "./handlers/health-check.handler.js";
+import { toolErrorResponse } from "./utils/tool-error-response.js";
 
 const server = new McpServer({
     name: "github-ia-agent",
@@ -54,11 +56,7 @@ server.registerTool(
                 ],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
-            return {
-                content: [{ type: "text", text: `Health check falló: ${message}` }],
-                isError: true,
-            };
+            return toolErrorResponse(err, "health_check");
         }
     }
 );
@@ -87,11 +85,7 @@ server.registerTool(
                 ],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
-            return {
-                content: [{ type: "text", text: `Error: ${message}` }],
-                isError: true,
-            };
+            return toolErrorResponse(err, "create_repository");
         }
     }
 );
@@ -118,11 +112,7 @@ server.registerTool(
                 content: [{ type: "text", text: `Repositorios (${repos.length}):\n${text}` }],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
-            return {
-                content: [{ type: "text", text: `Error: ${message}` }],
-                isError: true,
-            };
+            return toolErrorResponse(err, "list_repositories");
         }
     }
 );
@@ -152,11 +142,7 @@ server.registerTool(
                 ],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
-            return {
-                content: [{ type: "text", text: `Error: ${message}` }],
-                isError: true,
-            };
+            return toolErrorResponse(err, "create_issue");
         }
     }
 );
@@ -183,11 +169,7 @@ server.registerTool(
                 content: [{ type: "text", text: `Issues (${issues.length}):\n${text}` }],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
-            return {
-                content: [{ type: "text", text: `Error: ${message}` }],
-                isError: true,
-            };
+            return toolErrorResponse(err, "list_issues");
         }
     }
 );
@@ -219,11 +201,82 @@ server.registerTool(
                 ],
             };
         } catch (err) {
-            const message = err instanceof AppError ? err.message : "Error inesperado.";
+            return toolErrorResponse(err, "create_commit");
+        }
+    }
+);
+
+// Tool: consultar el historial de commits de un repositorio.
+server.registerTool(
+    "list_commits",
+    {
+        description:
+            "Consulta el historial de commits de un repositorio de GitHub. Devuelve SHA, mensaje, autor, fecha y URL de cada commit, del más nuevo al más viejo. Usar cuando el usuario quiere ver el historial, saber qué se cambió y cuándo, o necesita el SHA de un commit anterior (por ejemplo, antes de revertir). Requiere owner y repo.",
+        inputSchema: {
+            owner: z.string().describe("Dueño del repositorio"),
+            repo: z.string().describe("Nombre del repositorio"),
+            branch: z.string().optional().describe("Rama a consultar (default: la rama por defecto del repo)"),
+            per_page: z.number().int().optional().describe("Cantidad de commits a traer, entre 1 y 100 (default: 10)"),
+        },
+    },
+    async (args) => {
+        try {
+            const commits = await listCommitsHandler(args);
+            const text = commits.length
+                ? commits
+                    .map(
+                        (c) =>
+                            `- ${c.sha.slice(0, 7)} · ${c.message.split("\n")[0]}\n  ${c.author} · ${c.date}\n  ${c.url}`
+                    )
+                    .join("\n")
+                : "No se encontraron commits.";
             return {
-                content: [{ type: "text", text: `Error: ${message}` }],
-                isError: true,
+                content: [{ type: "text", text: `Commits (${commits.length}):\n${text}` }],
             };
+        } catch (err) {
+            return toolErrorResponse(err, "list_commits");
+        }
+    }
+);
+
+// Tool: volver el contenido de una rama al estado de un commit anterior.
+server.registerTool(
+    "revert_to_commit",
+    {
+        description:
+            "Vuelve el contenido de una rama al estado de un commit anterior. NO borra ni reescribe la historia: crea un commit nuevo con el árbol de archivos del commit indicado, así que la operación es segura y reversible. Usar cuando el usuario quiere deshacer cambios y volver a un estado anterior del repositorio. Requiere owner, repo y el SHA del commit destino (se puede obtener con list_commits).",
+        inputSchema: {
+            owner: z.string().describe("Dueño del repositorio"),
+            repo: z.string().describe("Nombre del repositorio"),
+            branch: z.string().optional().describe("Rama a revertir (default: main)"),
+            sha: z.string().describe("SHA del commit al que se quiere volver (7 a 40 caracteres hexadecimales)"),
+            message: z.string().optional().describe("Mensaje del commit de revert (default: 'Revert: volver al estado del commit <sha>')"),
+        },
+    },
+    async (args) => {
+        try {
+            const result = await revertToCommitHandler(args);
+
+            if (!result.reverted) {
+                return {
+                    content: [{ type: "text", text: `${result.message} No hizo falta hacer nada.` }],
+                };
+            }
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text:
+                            `Rama "${result.branch}" revertida al estado del commit ${result.targetSha.slice(0, 7)}.\n` +
+                            `Commit de revert: ${result.newCommitSha}\n` +
+                            `URL: ${result.newCommitUrl}\n` +
+                            `El historial quedó intacto: para deshacer esto, volvé al commit ${result.previousHeadSha.slice(0, 7)}.`,
+                    },
+                ],
+            };
+        } catch (err) {
+            return toolErrorResponse(err, "revert_to_commit");
         }
     }
 );
