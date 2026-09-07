@@ -1,0 +1,19 @@
+{
+    // El tsconfig.json principal solo incluye "src", porque es el que compila a
+    // dist/ y los tests no deben terminar en el build. La consecuencia es que
+    // tests/ queda fuera de toda verificación de tipos: Vitest los transpila
+    // descartando los tipos, sin chequearlos.
+    //
+    // Este archivo extiende el principal agregando tests/. Solo verifica: no
+    // emite nada, y por eso relaja "rootDir" (que existe para decidir la
+    // estructura de dist/, algo que acá no aplica).
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "rootDir": "."
+    },
+    "include": [
+        "src",
+        "tests"
+    ]
+}

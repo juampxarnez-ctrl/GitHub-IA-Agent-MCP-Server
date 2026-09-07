@@ -351,9 +351,16 @@ src/
 El proyecto usa **Vitest** con Octokit mockeado (los tests nunca tocan la red ni la API real).
 
 ```bash
-npm test          # Ejecuta todos los tests una vez
+npm test            # Verifica tipos y ejecuta todos los tests una vez
 npm run test:watch  # Modo watch (re-ejecuta al cambiar archivos)
+npm run typecheck   # Solo verifica tipos, sin correr los tests
 ```
+
+### Por qué `npm test` verifica tipos
+
+Vitest transpila los tests **descartando los tipos, sin chequearlos**: un "55 passed" garantiza que el código corre y que las aserciones dan bien, no que los tipos estén sanos. Y el `tsconfig.json` principal solo incluye `src`, porque es el que compila a `dist/` y los tests no deben terminar en el build — así que `tests/` quedaba fuera de toda verificación.
+
+`tsconfig.test.json` extiende el principal agregando `tests/`, sin emitir nada. `npm test` lo corre antes de los tests, así que un error de tipos en un test frena la suite en vez de pasar inadvertido.
 
 Los tests cubren:
 
@@ -372,7 +379,8 @@ Los tests cubren:
 | `npm run build` | Compila TypeScript a JavaScript (`dist/`) |
 | `npm run dev` | Ejecuta el servidor en modo desarrollo (con `tsx`) |
 | `npm start` | Ejecuta el servidor compilado (`dist/index.js`) |
-| `npm test` | Ejecuta los tests con Vitest |
+| `npm test` | Verifica tipos y ejecuta los tests con Vitest |
+| `npm run typecheck` | Verifica tipos de `src/` y `tests/` sin generar código |
 
 ---
 
